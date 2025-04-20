@@ -1,5 +1,5 @@
 {
-  "name": "@openai/codex",
+  "name": "codex-open",
   "version": "0.1.2504181820",
   "license": "Apache-2.0",
   "bin": {
@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
     "build:dev": "NODE_ENV=development node build.mjs --dev && NODE_OPTIONS=--enable-source-maps node dist/cli-dev.js",
-    "release:readme": "cp ../README.md ./README.md",
+    "release:readme": "echo 'README.md already exists'",
     "release:version": "TS=$(date +%y%m%d%H%M) && sed -E -i'' -e \"s/\\\"0\\.1\\.[0-9]{10}\\\"/\\\"0.1.${TS}\\\"/g\" package.json src/utils/session.ts",
     "release:build-and-publish": "pnpm run build && npm publish",
     "release": "pnpm run release:readme && pnpm run release:version && pnpm install && pnpm run release:build-and-publish"
@@ -81,6 +81,19 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/openai/codex"
+    "url": "https://github.com/liuxuheng/codex-open"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "assistant",
+    "coding",
+    "openai",
+    "codex"
+  ],
+  "author": "liuxuheng",
+  "description": "An open-source CLI tool for AI-assisted coding",
+  "publishConfig": {
+    "access": "public"
   }
 }
