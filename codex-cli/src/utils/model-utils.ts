@@ -2,7 +2,11 @@ import { OPENAI_API_KEY } from "./config";
 import OpenAI from "openai";
 
 const MODEL_LIST_TIMEOUT_MS = 2_000; // 2 seconds
-export const RECOMMENDED_MODELS: Array<string> = ["o4-mini", "o3"];
+export const RECOMMENDED_MODELS: Array<string> = [
+  "o4-mini",
+  "o3",
+  "deepseek-v3",
+];
 
 /**
  * Background model loader / cache.
@@ -56,6 +60,9 @@ export async function getAvailableModels(): Promise<Array<string>> {
  * Verify that the provided model identifier is present in the set returned by
  * {@link getAvailableModels}. The list of models is fetched from the OpenAI
  * `/models` endpoint the first time it is required and then cached in‑process.
+ *
+ * With the Chat Completion API, we allow any model name but return whether it's
+ * in the recommended list so the caller can show a warning if needed.
  */
 export async function isModelSupportedForResponses(
   model: string | undefined | null,

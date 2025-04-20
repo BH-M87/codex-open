@@ -55,7 +55,7 @@ const cli = meow(
 
   Options
     -h, --help                      Show usage and exit
-    -m, --model <model>             Model to use for completions (default: o4-mini)
+    -m, --model <model>             Model to use for completions (default: o4-mini, supports any OpenAI-compatible model)
     -i, --image <path>              Path(s) to image files to include as input
     -v, --view <rollout>            Inspect a previously saved rollout instead of starting a session
     -q, --quiet                     Non-interactive mode that only prints the assistant's final output
@@ -71,8 +71,8 @@ const cli = meow(
     --full-stdout              Do not truncate stdout/stderr from command outputs
     --notify                   Enable desktop notifications for responses
 
-    --flex-mode               Use "flex-mode" processing mode for the request (only supported
-                              with models o3 and o4-mini)
+    --flex-mode               Use "flex-mode" processing mode for the request (primarily supported
+                              with models o3, o4-mini, and deepseek-v3)
 
   Dangerous options
     --dangerously-auto-approve-everything
@@ -146,7 +146,7 @@ const cli = meow(
       flexMode: {
         type: "boolean",
         description:
-          "Enable the flex-mode service tier (only supported by models o3 and o4-mini)",
+          "Enable the flex-mode service tier (primarily supported by models o3, o4-mini, and deepseek-v3)",
       },
       fullStdout: {
         type: "boolean",
@@ -266,30 +266,30 @@ config = {
 // This is important because we write state file in the config dir
 await checkForUpdates().catch();
 // ---------------------------------------------------------------------------
-// --flex-mode validation (only allowed for o3 and o4-mini)
+// --flex-mode validation (primarily for o3, o4-mini, and deepseek-v3)
 // ---------------------------------------------------------------------------
 
 if (cli.flags.flexMode) {
-  const allowedFlexModels = new Set(["o3", "o4-mini"]);
+  const allowedFlexModels = new Set(["o3", "o4-mini", "deepseek-v3"]);
   if (!allowedFlexModels.has(config.model)) {
     // eslint-disable-next-line no-console
-    console.error(
-      `The --flex-mode option is only supported when using the 'o3' or 'o4-mini' models. ` +
-        `Current model: '${config.model}'.`,
+    console.warn(
+      `Warning: The --flex-mode option is primarily supported when using the 'o3', 'o4-mini', or 'deepseek-v3' models. ` +
+        `Current model: '${config.model}'. This may cause errors.`,
     );
-    process.exit(1);
+    // Continue execution instead of exiting
   }
 }
 
 if (!(await isModelSupportedForResponses(config.model))) {
   // eslint-disable-next-line no-console
-  console.error(
-    `The model "${config.model}" does not appear in the list of models ` +
-      `available to your account. Double‑check the spelling (use\n` +
+  console.warn(
+    `Warning: The model "${config.model}" does not appear in the list of models ` +
+      `available to your account. This may cause errors. Double‑check the spelling (use\n` +
       `  openai models list\n` +
       `to see the full list) or choose another model with the --model flag.`,
   );
-  process.exit(1);
+  // Continue execution instead of exiting
 }
 
 let rollout: AppRollout | undefined;

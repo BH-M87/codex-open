@@ -2,6 +2,14 @@ import type { ReviewDecision } from "./review.js";
 import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
 import type { AppConfig } from "../config.js";
 import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+  ChatCompletionToolMessageParam,
+  ChatCompletionSystemMessageParam,
+} from "openai/resources";
+
+// Legacy types for backward compatibility
+import type {
   ResponseFunctionToolCall,
   ResponseInputItem,
   ResponseItem,
@@ -35,7 +43,8 @@ export type CommandConfirmation = {
   explanation?: string;
 };
 
-const alreadyProcessedResponses = new Set();
+// Track processed responses to avoid duplicates
+const alreadyProcessedResponses = new Set<string>();
 
 type AgentLoopParams = {
   model: string;
@@ -419,6 +428,7 @@ export class AgentLoop {
       // accumulate listeners which in turn triggered Node's
       // `MaxListenersExceededWarning` after ten invocations.
 
+      // Track the last response ID for the current session
       let lastResponseId: string = previousResponseId;
 
       // If there are unresolved function calls from a previously cancelled run
@@ -507,22 +517,61 @@ export class AgentLoop {
                 `instructions (length ${mergedInstructions.length}): ${mergedInstructions}`,
               );
             }
-            // eslint-disable-next-line no-await-in-loop
-            stream = await this.oai.responses.create({
-              model: this.model,
-              instructions: mergedInstructions,
-              previous_response_id: lastResponseId || undefined,
-              input: turnInput,
-              stream: true,
-              parallel_tool_calls: false,
-              reasoning,
-              ...(this.config.flexMode ? { service_tier: "flex" } : {}),
-              tools: [
-                {
-                  type: "function",
+            // Convert ResponseInputItems to ChatCompletionMessageParam
+            const messages: Array<ChatCompletionMessageParam> = [];
+
+            // Add system message with instructions
+            if (mergedInstructions) {
+              messages.push({
+                role: "system",
+                content: mergedInstructions,
+              } as ChatCompletionSystemMessageParam);
+            }
+
+            // Convert turnInput to chat messages
+            for (const item of turnInput) {
+              if (item.type === "message") {
+                const role =
+                  item.role === "user"
+                    ? "user"
+                    : item.role === "assistant"
+                    ? "assistant"
+                    : "system";
+
+                // Convert content array to string
+                let content = "";
+                if (Array.isArray(item.content)) {
+                  content = item.content
+                    .map((c) => {
+                      if (c.type === "input_text" || c.type === "output_text") {
+                        return c.text;
+                      }
+                      return "";
+                    })
+                    .join(" ");
+                }
+
+                messages.push({
+                  role: role,
+                  content: content,
+                });
+              } else if (item.type === "function_call_output") {
+                // Add tool response message
+                messages.push({
+                  role: "tool",
+                  content: item.output,
+                  tool_call_id: item.call_id,
+                } as ChatCompletionToolMessageParam);
+              }
+            }
+
+            // Define the shell tool
+            const tools: Array<ChatCompletionTool> = [
+              {
+                type: "function",
+                function: {
                   name: "shell",
                   description: "Runs a shell command, and returns its output.",
-                  strict: false,
                   parameters: {
                     type: "object",
                     properties: {
@@ -541,8 +590,75 @@ export class AgentLoop {
                     additionalProperties: false,
                   },
                 },
-              ],
-            });
+              },
+            ];
+
+            try {
+              // Try using Chat Completions API first
+              // eslint-disable-next-line no-await-in-loop
+              stream = await this.oai.chat.completions.create({
+                model: this.model,
+                messages: messages,
+                stream: true,
+                ...(reasoning ? { reasoning } : {}),
+                ...(this.config.flexMode ? { service_tier: "flex" } : {}),
+                // Only include tools for models that support them
+                ...(this.model.startsWith("o") ? { tools: tools } : {}),
+              });
+            } catch (chatApiError) {
+              // If Chat Completions API fails with a tool-related error, fall back to Responses API
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const errMsg = (chatApiError as any)?.message || "";
+              if (
+                errMsg.includes("tool call") ||
+                errMsg.includes("invalid_parameter_error")
+              ) {
+                log(
+                  `Falling back to Responses API due to tool call error: ${errMsg}`,
+                );
+                // eslint-disable-next-line no-await-in-loop
+                stream = await this.oai.responses.create({
+                  model: this.model,
+                  instructions: mergedInstructions,
+                  previous_response_id: lastResponseId || undefined,
+                  input: turnInput,
+                  stream: true,
+                  parallel_tool_calls: false,
+                  reasoning,
+                  ...(this.config.flexMode ? { service_tier: "flex" } : {}),
+                  tools: [
+                    {
+                      type: "function",
+                      name: "shell",
+                      description:
+                        "Runs a shell command, and returns its output.",
+                      strict: false,
+                      parameters: {
+                        type: "object",
+                        properties: {
+                          command: { type: "array", items: { type: "string" } },
+                          workdir: {
+                            type: "string",
+                            description:
+                              "The working directory for the command.",
+                          },
+                          timeout: {
+                            type: "number",
+                            description:
+                              "The maximum time to wait for the command to complete in milliseconds.",
+                          },
+                        },
+                        required: ["command"],
+                        additionalProperties: false,
+                      },
+                    },
+                  ],
+                });
+              } else {
+                // Re-throw if it's not a tool-related error
+                throw chatApiError;
+              }
+            }
             break;
           } catch (error) {
             const isTimeout = error instanceof APIConnectionTimeoutError;
@@ -730,54 +846,161 @@ export class AgentLoop {
           return;
         }
 
+        // Buffer for collecting content from Chat Completions API
+        let chatCompletionBuffer = "";
+        const chatCompletionMessageId = `msg-${Date.now()}-${Math.random()
+          .toString(36)
+          .substring(2, 9)}`;
+        let hasFinishReason = false;
+
         try {
           // eslint-disable-next-line no-await-in-loop
-          for await (const event of stream) {
+          for await (const chunk of stream) {
             if (isLoggingEnabled()) {
-              log(`AgentLoop.run(): response event ${event.type}`);
+              log(`AgentLoop.run(): chat completion chunk received`);
             }
 
-            // process and surface each item (no‑op until we can depend on streaming events)
-            if (event.type === "response.output_item.done") {
-              const item = event.item;
-              // 1) if it's a reasoning item, annotate it
-              type ReasoningItem = { type?: string; duration_ms?: number };
-              const maybeReasoning = item as ReasoningItem;
-              if (maybeReasoning.type === "reasoning") {
-                maybeReasoning.duration_ms = Date.now() - thinkingStart;
+            // Process the chunk (could be from Chat Completions or Responses API)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const chunkAny = chunk as any;
+
+            // Handle Chat Completions API format
+            if (chunkAny.choices && chunkAny.choices.length > 0) {
+              const choice = chunkAny.choices[0];
+
+              // Handle tool calls
+              if (
+                choice?.delta?.tool_calls &&
+                choice.delta.tool_calls.length > 0
+              ) {
+                const toolCall = choice.delta.tool_calls[0];
+                if (toolCall) {
+                  // If this is a new tool call with an ID, track it
+                  if (toolCall.id) {
+                    // Check if we've already processed this tool call
+                    if (!alreadyProcessedResponses.has(toolCall.id)) {
+                      alreadyProcessedResponses.add(toolCall.id);
+
+                      // Create a function call item compatible with the existing code
+                      // Using any here to bridge between Chat Completion API and Responses API
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      const functionCallItem: any = {
+                        id: toolCall.id,
+                        type: "function_call",
+                        name: toolCall.function?.name,
+                        arguments: toolCall.function?.arguments || "{}",
+                      } as ResponseFunctionToolCall;
+
+                      // Track the tool call ID for potential abort
+                      this.pendingAborts.add(toolCall.id);
+
+                      // Process the function call
+                      const functionCallResults = await this.handleFunctionCall(
+                        functionCallItem as ResponseFunctionToolCall,
+                      );
+                      turnInput =
+                        functionCallResults as Array<ResponseInputItem>;
+                    }
+                  }
+                }
               }
+
+              // Handle content - buffer it instead of immediately staging
+              if (choice?.delta?.content) {
+                // For Chat Completions API, buffer the content
+                chatCompletionBuffer += choice.delta.content || "";
+              }
+
+              // If this is a finish_reason chunk, the streaming is complete
+              if (choice?.finish_reason) {
+                hasFinishReason = true;
+
+                // Only display the final message if we have content
+                if (chatCompletionBuffer) {
+                  // Create the final message with the complete buffered content
+                  const messageItem: ResponseItem = {
+                    id: chatCompletionMessageId,
+                    type: "message",
+                    role: "assistant",
+                    content: [
+                      {
+                        type: "output_text",
+                        text: chatCompletionBuffer,
+                      },
+                    ],
+                  } as ResponseItem;
+
+                  // Stage the complete message and immediately display it
+                  // Instead of using stageItem which has a delay, directly call onItem
+                  this.onItem(messageItem);
+
+                  // Log the complete message for debugging
+                  if (isLoggingEnabled()) {
+                    log(
+                      `Chat completion finished with content: ${chatCompletionBuffer.substring(
+                        0,
+                        100,
+                      )}...`,
+                    );
+                  }
+                }
+              }
+            }
+
+            // Handle Responses API format
+            if (
+              chunkAny.type === "response.output_item.done" &&
+              chunkAny.item
+            ) {
+              // Process the item from the Responses API
+              const item = chunkAny.item;
+
+              // If it's a reasoning item, annotate it
+              if (item.type === "reasoning") {
+                item.duration_ms = Date.now() - thinkingStart;
+              }
+
+              // Handle function calls
               if (item.type === "function_call") {
-                // Track outstanding tool call so we can abort later if needed.
-                // The item comes from the streaming response, therefore it has
-                // either `id` (chat) or `call_id` (responses) – we normalise
-                // by reading both.
-                const callId =
-                  (item as { call_id?: string; id?: string }).call_id ??
-                  (item as { id?: string }).id;
+                // Track outstanding tool call so we can abort later if needed
+                const callId = item.call_id || item.id;
                 if (callId) {
-                  this.pendingAborts.add(callId);
+                  // Check if we've already processed this function call
+                  if (!alreadyProcessedResponses.has(callId)) {
+                    alreadyProcessedResponses.add(callId);
+                    this.pendingAborts.add(callId);
+
+                    // Process the function call
+                    const functionCallResults = await this.handleFunctionCall(
+                      item,
+                    );
+                    turnInput = functionCallResults as Array<ResponseInputItem>;
+                  }
                 }
               } else {
-                stageItem(item as ResponseItem);
+                // For other item types, just stage them
+                stageItem(item);
               }
             }
 
-            if (event.type === "response.completed") {
+            // Handle response completed event
+            if (chunkAny.type === "response.completed" && chunkAny.response) {
               if (thisGeneration === this.generation && !this.canceled) {
-                for (const item of event.response.output) {
-                  stageItem(item as ResponseItem);
+                for (const item of chunkAny.response.output) {
+                  stageItem(item);
                 }
               }
-              if (event.response.status === "completed") {
-                // TODO: remove this once we can depend on streaming events
-                const newTurnInput = await this.processEventsWithoutStreaming(
-                  event.response.output,
-                  stageItem,
-                );
-                turnInput = newTurnInput;
-              }
-              lastResponseId = event.response.id;
-              this.onLastResponseId(event.response.id);
+            }
+
+            // Store the response ID if available
+            // Get the ID from the chunk (if available)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const chunkId = (chunk as any).id || (chunk as any).response?.id;
+            if (chunkId) {
+              // Update the last response ID and notify listeners
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              lastResponseId = chunkId;
+              this.onLastResponseId(chunkId);
             }
           }
         } catch (err: unknown) {
@@ -829,6 +1052,45 @@ export class AgentLoop {
           throw err;
         } finally {
           this.currentStream = null;
+
+          // If we collected content but never got a finish_reason, display the content anyway
+          if (chatCompletionBuffer && !hasFinishReason) {
+            if (isLoggingEnabled()) {
+              log(
+                `Stream ended without finish_reason, displaying buffered content: ${chatCompletionBuffer.substring(
+                  0,
+                  100,
+                )}...`,
+              );
+            }
+
+            // Create a final message with the buffered content
+            const finalMessageItem: ResponseItem = {
+              id: chatCompletionMessageId, // Use the same ID to replace the typing indicator
+              type: "message",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: chatCompletionBuffer,
+                },
+              ],
+            } as ResponseItem;
+
+            // Stage the complete message and immediately display it
+            // Instead of using stageItem which has a delay, directly call onItem
+            this.onItem(finalMessageItem);
+
+            // Log that we're displaying the final content
+            if (isLoggingEnabled()) {
+              log(
+                `Displayed final content from Chat Completion API: ${chatCompletionBuffer.substring(
+                  0,
+                  50,
+                )}...`,
+              );
+            }
+          }
         }
 
         log(
@@ -1101,33 +1363,9 @@ export class AgentLoop {
     }
   }
 
-  // we need until we can depend on streaming events
-  private async processEventsWithoutStreaming(
-    output: Array<ResponseInputItem>,
-    emitItem: (item: ResponseItem) => void,
-  ): Promise<Array<ResponseInputItem>> {
-    // If the agent has been canceled we should short‑circuit immediately to
-    // avoid any further processing (including potentially expensive tool
-    // calls). Returning an empty array ensures the main run‑loop terminates
-    // promptly.
-    if (this.canceled) {
-      return [];
-    }
-    const turnInput: Array<ResponseInputItem> = [];
-    for (const item of output) {
-      if (item.type === "function_call") {
-        if (alreadyProcessedResponses.has(item.id)) {
-          continue;
-        }
-        alreadyProcessedResponses.add(item.id);
-        // eslint-disable-next-line no-await-in-loop
-        const result = await this.handleFunctionCall(item);
-        turnInput.push(...result);
-      }
-      emitItem(item as ResponseItem);
-    }
-    return turnInput;
-  }
+  // This method was previously used to process events without streaming
+  // Now we handle both Chat Completions API and Responses API formats directly
+  // in the stream processing code
 }
 
 const prefix = `You are operating as and within the Codex CLI, a terminal-based agentic coding assistant built by OpenAI. It wraps OpenAI models to enable natural language interaction with a local codebase. You are expected to be precise, safe, and helpful.
