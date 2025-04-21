@@ -25,7 +25,7 @@ import {
 } from "./utils/config";
 import { createInputItem } from "./utils/input-utils";
 import { initLogger } from "./utils/logger/log";
-import { isModelSupportedForResponses } from "./utils/model-utils.js";
+import { isRecommendedModel } from "./utils/model-utils.js";
 import { parseToolCall } from "./utils/parsers";
 import { onExit, setInkRenderer } from "./utils/terminal";
 import chalk from "chalk";
@@ -282,17 +282,14 @@ if (cli.flags.flexMode) {
 }
 
 if (
-  !(await isModelSupportedForResponses(config.model)) &&
+  !isRecommendedModel(config.model) &&
   (!provider || provider.toLowerCase() === "openai")
 ) {
   // eslint-disable-next-line no-console
-  console.error(
-    `The model "${config.model}" does not appear in the list of models ` +
-      `available to your account. Double‑check the spelling (use\n` +
-      `  openai models list\n` +
-      `to see the full list) or choose another model with the --model flag.`,
+  console.warn(
+    `Warning: The model "${config.model}" is not in the list of recommended models. ` +
+      `This is allowed, but may not work as expected.`,
   );
-  process.exit(1);
 }
 
 let rollout: AppRollout | undefined;

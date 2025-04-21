@@ -22,7 +22,7 @@ import { extractAppliedPatches as _extractAppliedPatches } from "../../utils/ext
 import { getGitDiff } from "../../utils/get-diff.js";
 import { createInputItem } from "../../utils/input-utils.js";
 import { log } from "../../utils/logger/log.js";
-import { getAvailableModels } from "../../utils/model-utils.js";
+import { isRecommendedModel } from "../../utils/model-utils.js";
 import { CLI_VERSION } from "../../utils/session.js";
 import { shortCwd } from "../../utils/short-path.js";
 import { saveRollout } from "../../utils/storage/save-rollout.js";
@@ -421,28 +421,26 @@ export default function TerminalChat({
   }, [agent, initialPrompt, initialImagePaths]);
 
   // ────────────────────────────────────────────────────────────────
-  // In-app warning if CLI --model isn't in fetched list
+  // In-app warning if CLI --model isn't in recommended list
   // ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    (async () => {
-      const available = await getAvailableModels(provider);
-      if (model && available.length > 0 && !available.includes(model)) {
-        setItems((prev) => [
-          ...prev,
-          {
-            id: `unknown-model-${Date.now()}`,
-            type: "message",
-            role: "system",
-            content: [
-              {
-                type: "input_text",
-                text: `Warning: model "${model}" is not in the list of available models for provider "${provider}".`,
-              },
-            ],
-          },
-        ]);
-      }
-    })();
+    // Show warning for non-recommended models
+    if (model && !isRecommendedModel(model)) {
+      setItems((prev) => [
+        ...prev,
+        {
+          id: `non-recommended-model-${Date.now()}`,
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `Warning: model "${model}" is not in the list of recommended models. This is allowed, but may not work as expected.`,
+            },
+          ],
+        },
+      ]);
+    }
     // run once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

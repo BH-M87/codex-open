@@ -1,8 +1,11 @@
 import { getBaseUrl, getApiKey } from "./config";
 import OpenAI from "openai";
 
-const MODEL_LIST_TIMEOUT_MS = 2_000; // 2 seconds
-export const RECOMMENDED_MODELS: Array<string> = ["o4-mini", "o3"];
+export const RECOMMENDED_MODELS: Array<string> = [
+  "o4-mini",
+  "o3",
+  "deepseek-v3",
+];
 
 /**
  * Background model loader / cache.
@@ -47,38 +50,32 @@ export async function getAvailableModels(
 }
 
 /**
- * Verify that the provided model identifier is present in the set returned by
- * {@link getAvailableModels}. The list of models is fetched from the OpenAI
- * `/models` endpoint the first time it is required and then cached in‑process.
+ * Check if the provided model is in the list of recommended models.
+ * This function no longer blocks any models, but returns whether the model
+ * is in the recommended list for informational purposes.
+ *
+ * @param model The model name to check
+ * @returns true for all models (no longer blocks any models)
  */
 export async function isModelSupportedForResponses(
-  model: string | undefined | null,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _model: string | undefined | null,
 ): Promise<boolean> {
-  if (
-    typeof model !== "string" ||
-    model.trim() === "" ||
-    RECOMMENDED_MODELS.includes(model)
-  ) {
+  // Always return true - we no longer block any models
+  return true;
+}
+
+/**
+ * Check if a model is in the recommended list.
+ * This is used to show warnings for non-recommended models.
+ *
+ * @param model The model name to check
+ * @returns true if the model is recommended, false otherwise
+ */
+export function isRecommendedModel(model: string | undefined | null): boolean {
+  if (typeof model !== "string" || model.trim() === "") {
     return true;
   }
 
-  try {
-    const models = await Promise.race<Array<string>>([
-      getAvailableModels("openai"),
-      new Promise<Array<string>>((resolve) =>
-        setTimeout(() => resolve([]), MODEL_LIST_TIMEOUT_MS),
-      ),
-    ]);
-
-    // If the timeout fired we get an empty list → treat as supported to avoid
-    // false negatives.
-    if (models.length === 0) {
-      return true;
-    }
-
-    return models.includes(model.trim());
-  } catch {
-    // Network or library failure → don't block start‑up.
-    return true;
-  }
+  return RECOMMENDED_MODELS.includes(model.trim());
 }
