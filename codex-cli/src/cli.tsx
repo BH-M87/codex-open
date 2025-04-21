@@ -241,14 +241,24 @@ const provider = cli.flags.provider ?? config.provider;
 const apiKey = getApiKey(provider);
 
 if (!apiKey) {
+  // Get the provider info to show the correct environment variable
+  const providerInfo = provider
+    ? { name: provider, envKey: `${provider.toUpperCase()}_API_KEY` }
+    : {
+        name: "OpenAI",
+        envKey: "OPENAI_API_KEY",
+      };
+
   // eslint-disable-next-line no-console
   console.error(
-    `\n${chalk.red("Missing OpenAI API key.")}\n\n` +
-      `Set the environment variable ${chalk.bold("OPENAI_API_KEY")} ` +
+    `\n${chalk.red(`Missing API key for ${providerInfo.name}.`)}\n\n` +
+      `Set the environment variable ${chalk.bold(providerInfo.envKey)} ` +
       `and re-run this command.\n` +
-      `You can create a key here: ${chalk.bold(
-        chalk.underline("https://platform.openai.com/account/api-keys"),
-      )}\n`,
+      (providerInfo.name === "OpenAI"
+        ? `You can create a key here: ${chalk.bold(
+            chalk.underline("https://platform.openai.com/account/api-keys"),
+          )}\n`
+        : ""),
   );
   process.exit(1);
 }

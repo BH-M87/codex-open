@@ -55,6 +55,17 @@ export function getApiKey(provider: string = "openai"): string | undefined {
     if (providerInfo.name === "Ollama") {
       return process.env[providerInfo.envKey] ?? "dummy";
     }
+    // For OpenAI Compatible provider, check if we have a base URL
+    if (providerInfo.name === "OpenAI Compatible") {
+      // Only return the API key if we have a base URL
+      if (!providerInfo.baseURL) {
+        // eslint-disable-next-line no-console
+        console.log(
+          "OpenAI Compatible provider requires OPENAI_COMPATIBLE_BASE_URL to be set",
+        );
+        return undefined;
+      }
+    }
     return process.env[providerInfo.envKey];
   }
 
